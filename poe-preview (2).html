@@ -1,0 +1,415 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta name="x-poe-datastore-behavior" content="local_only"><meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://code.jquery.com https://unpkg.com https://d3js.org https://threejs.org https://cdn.plot.ly https://stackpath.bootstrapcdn.com https://maps.googleapis.com https://cdn.tailwindcss.com https://ajax.googleapis.com https://kit.fontawesome.com https://cdn.datatables.net https://maxcdn.bootstrapcdn.com https://code.highcharts.com https://tako-static-assets-production.s3.amazonaws.com https://www.youtube.com https://fonts.googleapis.com https://fonts.gstatic.com https://pfst.cf2.poecdn.net https://puc.poecdn.net https://i.imgur.com https://wikimedia.org https://*.icons8.com https://*.giphy.com https://picsum.photos https://images.unsplash.com; frame-src 'self' https://www.youtube.com https://trytako.com; child-src 'self'; manifest-src 'self'; worker-src 'self'; upgrade-insecure-requests; block-all-mixed-content;">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Retro Pixel Battle v2.0</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #111;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            touch-action: none;
+        }
+        #game-container { position: relative; border: 4px solid #444; }
+        canvas { display: block; image-rendering: pixelated; }
+        #ui-layer {
+            position: absolute; top: 10px; left: 10px; right: 10px;
+            display: flex; justify-content: space-between;
+            color: white; font-weight: bold; text-shadow: 2px 2px 0 #000; pointer-events: none;
+        }
+        .bar-container { width: 100px; height: 10px; background: #333; border: 1px solid #fff; }
+        .bar-fill { height: 100%; transition: width 0.2s; }
+        #p-hp { background: #0f0; width: 100%; }
+        #e-hp { background: #f00; width: 100%; }
+        
+        #controls {
+            margin-top: 20px; display: none; width: 100%; max-width: 600px;
+            justify-content: space-between; padding: 0 20px; box-sizing: border-box;
+        }
+        .btn {
+            background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.5);
+            color: white; width: 64px; height: 64px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center; font-size: 24px;
+        }
+        .btn:active { background: rgba(255,255,255,0.4); transform: scale(0.95); }
+        @media (hover: none) and (pointer: coarse) { #controls { display: flex; } }
+        
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); display: flex; flex-direction: column;
+            align-items: center; justify-content: center; color: white;
+        }
+        button.start-btn {
+            padding: 10px 30px; font-size: 20px; font-family: inherit;
+            background: #fca; border: 4px solid #fff; cursor: pointer;
+            box-shadow: 0 4px 0 #888;
+        }
+        button.start-btn:active { transform: translateY(4px); box-shadow: 0 0 0; }
+    </style>
+<script src="https://puc.poecdn.net/authenticated_preview_page/syncedState.3f7572448765332f3047.js"></script></head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer">
+            <div>PLAYER <div class="bar-container"><div id="p-hp" class="bar-fill"></div></div></div>
+            <div style="text-align:right">BOSS <div class="bar-container"><div id="e-hp" class="bar-fill"></div></div></div>
+        </div>
+        <div id="overlay">
+            <h1 id="msg-title" style="font-size: 40px; margin-bottom: 10px; text-shadow: 4px 4px #d00;">PIXEL BATTLE</h1>
+            <p style="margin-bottom: 30px;">Arrows to Move/Jump, Z/Space to Shoot</p>
+            <button class="start-btn" onclick="startGame()">START GAME</button>
+        </div>
+    </div>
+
+    <div id="controls">
+        <div style="display:flex; gap:15px;">
+            <div class="btn" id="btn-left">←</div>
+            <div class="btn" id="btn-right">→</div>
+        </div>
+        <div style="display:flex; gap:15px;">
+            <div class="btn" id="btn-shoot">A</div>
+            <div class="btn" id="btn-jump">B</div>
+        </div>
+    </div>
+
+<script>
+// --- AUDIO SYSTEM (Simple Synth) ---
+const AudioSys = {
+    ctx: null,
+    init: function() {
+        window.AudioContext = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AudioContext();
+    },
+    playTone: function(freq, type, duration, vol=0.1) {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        
+        // Envelope
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+    },
+    shoot: function() { this.playTone(400, 'square', 0.1, 0.05); },
+    jump: function() { this.playTone(150, 'square', 0.2, 0.05); },
+    hit: function() { this.playTone(100, 'sawtooth', 0.3, 0.1); },
+    explosion: function() { this.playTone(50, 'sawtooth', 0.5, 0.2); }
+};
+
+// --- SPRITE DATA (Same as before, compressed) ---
+const SPRITES = {
+    player: { w:12, h:16, p:{1:'#000',2:'#fca',3:'#555',4:'#333'}, m:[0,1,1,1,1,1,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,1,1,2,2,2,1,1,0,0,0,0,0,0,1,2,1,2,1,0,0,0,0,0,0,0,1,2,2,2,1,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,3,3,3,3,3,0,0,0,0,0,0,3,3,3,3,3,3,3,2,0,0,0,0,3,3,3,3,4,3,3,2,0,0,0,0,3,3,3,4,4,4,3,0,0,0,0,0,0,3,3,4,4,4,0,0,0,0,0,0,0,3,3,3,3,3,0,0,0,0,0,0,0,0,3,0,0,3,0,0,0,0,0,0,0,0,3,0,0,3,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0] },
+    enemy: { w:14, h:14, p:{1:'#000',2:'#fca',3:'#336',4:'#555',5:'#888'}, m:[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,1,1,1,0,0,0,0,1,0,0,0,0,1,1,1,1,1,1,0,0,0,1,0,0,0,0,1,2,2,2,2,1,0,0,0,1,0,0,0,0,1,2,1,2,1,0,0,0,0,4,0,0,0,0,1,2,2,2,1,0,0,0,4,5,4,0,0,0,0,2,2,2,2,4,4,4,4,5,4,0,0,0,0,2,2,2,2,0,0,0,4,5,4,0,0,0,3,3,3,3,3,0,0,0,0,4,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0,3,3,3,0,0,0,3,3,0,0,0,0,0,0,3,3,0,0,0,0,0,3,0,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0] }
+};
+
+// --- ENGINE & LOGIC ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const SCALE = 3;
+const GRAVITY = 0.6;
+
+let game = {
+    active: false,
+    shake: 0,
+    width: 0, height: 0,
+    clouds: []
+};
+
+// Resize
+function resize() {
+    let w = Math.min(window.innerWidth, 800);
+    let h = w * 0.5625; 
+    canvas.width = w; canvas.height = h;
+    canvas.style.width = w+'px'; canvas.style.height = h+'px';
+    game.width = w; game.height = h;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Input
+const keys = {};
+['ArrowLeft','ArrowRight','ArrowUp','Space','KeyZ'].forEach(k => {
+    window.addEventListener('keydown', e => { if(e.code===k) keys[k]=true; });
+    window.addEventListener('keyup', e => { if(e.code===k) keys[k]=false; });
+});
+const touchBind = (id, k) => {
+    const el = document.getElementById(id);
+    el.addEventListener('touchstart', e=>{e.preventDefault(); keys[k]=true;});
+    el.addEventListener('touchend', e=>{e.preventDefault(); keys[k]=false;});
+};
+touchBind('btn-left','ArrowLeft'); touchBind('btn-right','ArrowRight');
+touchBind('btn-jump','ArrowUp'); touchBind('btn-shoot','Space');
+
+// Classes
+class Entity {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.vx = 0; this.vy = 0;
+        this.grounded = false; this.hp = 10; this.maxHp = 10;
+        this.flash = 0; this.animOffset = 0;
+    }
+    update() {
+        this.vy += GRAVITY;
+        this.x += this.vx; this.y += this.vy;
+        
+        // Simple Floor Collision
+        const floorY = game.height - 48 - this.h; // 48 is ground height
+        if (this.y > floorY) {
+            this.y = floorY; this.vy = 0; this.grounded = true;
+        }
+        
+        // Walls
+        if (this.x < 0) this.x = 0;
+        if (this.x > game.width - this.w) this.x = game.width - this.w;
+
+        if (this.flash > 0) this.flash--;
+        
+        // Bobbing animation
+        if (Math.abs(this.vx) > 0.1) {
+            this.animOffset = Math.sin(Date.now() / 100) * 2;
+        } else {
+            this.animOffset = 0;
+        }
+    }
+    draw(key, flip) {
+        if (this.flash > 0) {
+            ctx.globalCompositeOperation = 'source-atop';
+            ctx.fillStyle = 'white';
+        }
+        drawSprite(key, this.x, this.y + this.animOffset, flip, this.flash > 0);
+    }
+}
+
+class Bullet {
+    constructor(x, y, vx, isEnemy) {
+        this.x = x; this.y = y; this.vx = vx; this.isEnemy = isEnemy;
+        this.active = true; this.w = 10; this.h = 10;
+    }
+    update() {
+        this.x += this.vx;
+        if (this.x < -50 || this.x > game.width + 50) this.active = false;
+    }
+    draw() {
+        ctx.fillStyle = this.isEnemy ? '#f0f' : '#f00';
+        ctx.beginPath(); ctx.arc(this.x, this.y, this.isEnemy ? 6 : 8, 0, Math.PI*2); ctx.fill();
+        // Glow
+        ctx.shadowBlur = 10; ctx.shadowColor = ctx.fillStyle;
+        ctx.fill(); ctx.shadowBlur = 0;
+    }
+}
+
+class Particle {
+    constructor(x, y, color) {
+        this.x = x; this.y = y; this.color = color;
+        this.vx = (Math.random()-0.5)*10; this.vy = (Math.random()-0.5)*10;
+        this.life = 1.0;
+    }
+    update() { this.x+=this.vx; this.y+=this.vy; this.life-=0.05; }
+    draw() {
+        ctx.globalAlpha = Math.max(0, this.life);
+        ctx.fillStyle = this.color; ctx.fillRect(this.x, this.y, SCALE*2, SCALE*2);
+        ctx.globalAlpha = 1;
+    }
+}
+
+// Game State
+let player, enemy, bullets = [], particles = [];
+
+function startGame() {
+    AudioSys.init();
+    document.getElementById('overlay').style.display = 'none';
+    game.active = true;
+    player = new Entity(50, 100, 12*SCALE, 16*SCALE);
+    player.hp = 10; player.maxHp = 10;
+    
+    enemy = new Entity(game.width - 100, 100, 14*SCALE, 14*SCALE);
+    enemy.hp = 20; enemy.maxHp = 20;
+    enemy.shootTimer = 0;
+    
+    bullets = []; particles = [];
+    
+    // Generate Clouds
+    game.clouds = [];
+    for(let i=0; i<5; i++) {
+        game.clouds.push({
+            x: Math.random() * game.width,
+            y: Math.random() * (game.height/2),
+            s: 0.5 + Math.random(),
+            v: 0.2 + Math.random() * 0.5
+        });
+    }
+    
+    loop();
+}
+
+function update() {
+    if (!game.active) return;
+
+    // Screen Shake Decay
+    if (game.shake > 0) game.shake *= 0.9;
+    if (game.shake < 0.5) game.shake = 0;
+
+    // Player
+    if (keys.ArrowRight) { player.vx = 5; player.facingRight = true; }
+    else if (keys.ArrowLeft) { player.vx = -5; player.facingRight = false; }
+    else player.vx *= 0.8;
+    
+    if (keys.ArrowUp && player.grounded) { player.vy = -12; player.grounded = false; AudioSys.jump(); }
+    
+    if ((keys.Space || keys.KeyZ) && !player.cooldown) {
+        bullets.push(new Bullet(player.x + (player.facingRight?40:-10), player.y+20, player.facingRight?10:-10, false));
+        player.cooldown = 15;
+        game.shake = 2; // Small shake on shoot
+        AudioSys.shoot();
+    }
+    if (player.cooldown > 0) player.cooldown--;
+    player.update();
+
+    // Enemy AI
+    if (enemy.hp > 0) {
+        // Patrol
+        if (Math.abs(player.x - enemy.x) > 200) {
+            enemy.vx = (player.x > enemy.x) ? 2 : -2;
+        } else {
+            enemy.vx = 0; // Stop to shoot
+        }
+        enemy.facingRight = player.x > enemy.x;
+        
+        // Shoot
+        enemy.shootTimer++;
+        if (enemy.shootTimer > 60) { // Fire every second
+            bullets.push(new Bullet(enemy.x + (enemy.facingRight?40:-10), enemy.y+20, enemy.facingRight?7:-7, true));
+            enemy.shootTimer = 0;
+            AudioSys.shoot();
+        }
+        enemy.update();
+    }
+
+    // Bullets
+    bullets.forEach(b => {
+        b.update();
+        // Collision
+        let target = b.isEnemy ? player : enemy;
+        if (target.hp > 0 && checkRect(b.x, b.y, b.w, b.h, target.x, target.y, target.w, target.h)) {
+            b.active = false;
+            target.hp--;
+            target.flash = 5;
+            game.shake = 10; // Big shake on hit
+            AudioSys.hit();
+            spawnParticles(b.x, b.y, b.isEnemy ? '#0f0' : '#f0f', 10);
+            
+            if (target.hp <= 0) {
+                spawnParticles(target.x, target.y, '#fff', 50);
+                AudioSys.explosion();
+                if (target === player) setTimeout(()=>endGame(false), 1000);
+                else setTimeout(()=>endGame(true), 1000);
+            }
+        }
+    });
+    bullets = bullets.filter(b => b.active);
+
+    // Particles
+    particles.forEach(p => p.update());
+    particles = particles.filter(p => p.life > 0);
+    
+    // Clouds
+    game.clouds.forEach(c => {
+        c.x -= c.v;
+        if (c.x < -100) c.x = game.width + 100;
+    });
+
+    // UI Update
+    document.getElementById('p-hp').style.width = (player.hp/player.maxHp*100)+'%';
+    document.getElementById('e-hp').style.width = (enemy.hp/enemy.maxHp*100)+'%';
+}
+
+function draw() {
+    // Shake Transform
+    ctx.save();
+    let dx = (Math.random()-0.5) * game.shake;
+    let dy = (Math.random()-0.5) * game.shake;
+    ctx.translate(dx, dy);
+
+    // Sky
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(-10, -10, game.width+20, game.height+20); // Oversize for shake
+
+    // Clouds (Parallax)
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    game.clouds.forEach(c => {
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 30*c.s, 0, Math.PI*2);
+        ctx.arc(c.x+20*c.s, c.y-10*c.s, 35*c.s, 0, Math.PI*2);
+        ctx.arc(c.x+40*c.s, c.y, 30*c.s, 0, Math.PI*2);
+        ctx.fill();
+    });
+
+    // Ground
+    ctx.fillStyle = '#654321';
+    ctx.fillRect(0, game.height-48, game.width, 48);
+    ctx.fillStyle = '#4e9c4e'; // Grass top
+    ctx.fillRect(0, game.height-48, game.width, 10);
+
+    // Entities
+    if (player.hp > 0) player.draw('player', !player.facingRight);
+    if (enemy.hp > 0) enemy.draw('enemy', !enemy.facingRight);
+    
+    bullets.forEach(b => b.draw());
+    particles.forEach(p => p.draw());
+
+    ctx.restore();
+}
+
+function loop() {
+    if (!game.active) return;
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+function endGame(win) {
+    game.active = false;
+    document.getElementById('overlay').style.display = 'flex';
+    document.getElementById('msg-title').innerText = win ? "VICTORY!" : "DEFEAT";
+    document.getElementById('msg-title').style.color = win ? "#4f4" : "#f44";
+}
+
+function checkRect(x1,y1,w1,h1, x2,y2,w2,h2) {
+    return x1 < x2+w2 && x1+w1 > x2 && y1 < y2+h2 && y1+h1 > y2;
+}
+
+function spawnParticles(x, y, c, n) {
+    for(let i=0; i<n; i++) particles.push(new Particle(x, y, c));
+}
+
+// Sprite Drawer
+function drawSprite(key, x, y, flip, white=false) {
+    const s = SPRITES[key];
+    const p = s.w;
+    for(let r=0; r<s.h; r++) {
+        for(let c=0; c<s.w; c++) {
+            let idx = s.m[r*s.w + c];
+            if(idx) {
+                ctx.fillStyle = white ? '#fff' : s.p[idx];
+                let dx = flip ? x + (s.w-1-c)*SCALE : x + c*SCALE;
+                ctx.fillRect(dx, y + r*SCALE, SCALE, SCALE);
+            }
+        }
+    }
+}
+</script>
+
+
+</body></html>
